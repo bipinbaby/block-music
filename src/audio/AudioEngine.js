@@ -216,19 +216,25 @@ class AudioEngine {
    * Rebuilds the entire graph in an OfflineAudioContext.
    */
   async renderToBuffer(blocks, bpm, totalColumns) {
-    // Pre-calculate all timings in seconds — no Tone.js string parsing at render time
     const sixteenthSecs = 60 / bpm / 4;
-    const durationSeconds = totalColumns * sixteenthSecs + 4; // +4s tail for reverb/delay
 
-    // Capture live master volume so the WAV matches what you hear
+    // Tail = longest reverb decay among enabled reverbs, or 1s minimum
+    const tail = blocks.reduce((max, b) => {
+      if (!b.fx.reverb.enabled) return max;
+      return Math.max(max, b.fx.reverb.roomSize * 5 + 0.5);
+    }, blocks.some(b => b.fx.delay.enabled) ? 1.5 : 1.0);
+
+    const durationSeconds = totalColumns * sixteenthSecs + tail;
     const masterDb = this.masterGain?.volume?.value ?? -6;
 
     const buffer = await Tone.Offline(async ({ transport }) => {
       transport.bpm.value = bpm;
-
-      // Master volume — mirrors the live audio chain
       const masterVol = new Tone.Volume(masterDb).toDestination();
 
+      // ── Phase 1: build every voice, await all reverbs ─────────
+      // All awaits complete before any note is scheduled, so no
+      // note misses its transport time slot.
+      const scheduled = [];
       for (const block of blocks) {
         const synth = new Tone.MonoSynth({
           oscillator: { type: block.oscillator.type },
@@ -239,29 +245,36 @@ class AudioEngine {
             baseFrequency: block.filter.frequency,
           },
         });
-        const gain = new Tone.Gain(block.amplifier.gain);
+        const gain   = new Tone.Gain(block.amplifier.gain);
         const reverb = new Tone.Reverb({
           decay: block.fx.reverb.roomSize * 5 + 0.5,
-          wet: block.fx.reverb.enabled ? block.fx.reverb.wet : 0,
+          wet:   block.fx.reverb.enabled ? block.fx.reverb.wet : 0,
         });
         const delay = new Tone.FeedbackDelay({
           delayTime: block.fx.delay.time,
-          feedback: block.fx.delay.feedback,
-          wet: block.fx.delay.enabled ? block.fx.delay.wet : 0,
+          feedback:  block.fx.delay.feedback,
+          wet:       block.fx.delay.enabled ? block.fx.delay.wet : 0,
         });
 
-        await reverb.ready;
+        await reverb.ready;   // must resolve before we schedule
 
         synth.connect(gain);
         gain.connect(reverb);
         reverb.connect(delay);
         delay.connect(masterVol);
 
-        // Schedule note using pre-calculated seconds — reliable across all BPMs
-        const startSec = block.column * sixteenthSecs;
-        const durSec   = block.duration * sixteenthSecs;
+        scheduled.push({
+          synth,
+          note:     block.note,
+          startSec: block.column   * sixteenthSecs,
+          durSec:   block.duration * sixteenthSecs,
+        });
+      }
+
+      // ── Phase 2: schedule all notes (transport not started yet) ─
+      for (const { synth, note, startSec, durSec } of scheduled) {
         transport.schedule((time) => {
-          synth.triggerAttackRelease(block.note, durSec, time);
+          synth.triggerAttackRelease(note, durSec, time);
         }, startSec);
       }
 
