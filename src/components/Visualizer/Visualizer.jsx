@@ -7,10 +7,10 @@ const MIN_OCT  = 2;
 const MAX_OCT  = 5;
 const N_LEVELS = MAX_OCT - MIN_OCT + 1;   // 4
 
-const BW    = 1.0;    // block width
-const BH    = 0.52;   // block height
-const BD    = 0.38;   // block depth
-const GAP_H = 0.08;   // vertical gap between levels
+const BW    = 1.0;
+const BH    = 0.52;
+const BD    = 0.38;
+const GAP_H = 0.08;
 
 const OCTAVE_HUES = { 2: 0, 3: 30, 4: 60, 5: 120 };
 
@@ -20,30 +20,10 @@ function hslToColor(h, s, l) {
   return c;
 }
 
-function blockBaseColor(octave)     { return hslToColor(OCTAVE_HUES[octave] ?? 0, 90, 40); }
-function blockEmissiveCol(octave)   { return hslToColor(OCTAVE_HUES[octave] ?? 0, 100, 60); }
-function blockLightColor(octave)    { return hslToColor(OCTAVE_HUES[octave] ?? 0, 100, 75); }
-function blockBrightColor(octave)   { return hslToColor(OCTAVE_HUES[octave] ?? 0, 90, 72); }
+function blockBaseColor(octave) { return hslToColor(OCTAVE_HUES[octave] ?? 0, 90, 40); }
 
 function computeRadius(cols) {
   return Math.max(3.5, (cols * (BW + 0.28)) / (2 * Math.PI));
-}
-
-// ─── Glow sprite texture (radial gradient on canvas) ───────────
-function makeGlowTexture() {
-  const size = 128;
-  const canvas = document.createElement('canvas');
-  canvas.width = canvas.height = size;
-  const ctx = canvas.getContext('2d');
-  const mid = size / 2;
-  const grad = ctx.createRadialGradient(mid, mid, 0, mid, mid, mid);
-  grad.addColorStop(0,    'rgba(255,255,255,1)');
-  grad.addColorStop(0.25, 'rgba(255,255,255,0.6)');
-  grad.addColorStop(0.6,  'rgba(255,255,255,0.15)');
-  grad.addColorStop(1,    'rgba(255,255,255,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(canvas);
 }
 
 // ─── React component ────────────────────────────────────────────
@@ -62,7 +42,6 @@ export default function Visualizer() {
     else document.exitFullscreen();
   }
 
-  // ── Three.js lifecycle ───────────────────────────────────────
   useEffect(() => {
     const container = mountRef.current;
     if (!container) return;
@@ -102,27 +81,16 @@ export default function Visualizer() {
 
     // ── Carousel group ────────────────────────────────────────
     const carousel = new THREE.Group();
-    carousel.rotation.x = -0.26; // tilt to reveal top faces
+    carousel.rotation.x = -0.26;
     scene.add(carousel);
 
-    // ── Shared geometry ──────────────────────────────────────
+    // ── Shared geometry ───────────────────────────────────────
     const blockGeo = new THREE.BoxGeometry(BW, BH, BD);
 
-    // ── Glow sprite setup ────────────────────────────────────
-    const glowTex = makeGlowTexture();
-
-    // ─────────────────────────────────────────────────────────
-    // meshMap[col][level] = {
-    //   mesh, mat, glowSprite, pointLight,
-    //   isFiller, octave,
-    //   isFlash, flashStart, unflashStart
-    // }
-    // ─────────────────────────────────────────────────────────
+    // meshMap[col][level] = { mesh, mat, isFiller, octave }
     const meshMap = [];
-    let numCols = useSequencerStore.getState().totalColumns;
 
     function buildCarousel(cols, blocks) {
-      // Remove old objects
       while (carousel.children.length) {
         const child = carousel.children[0];
         if (child.geometry && child.geometry !== blockGeo) child.geometry.dispose();
@@ -133,7 +101,6 @@ export default function Visualizer() {
         carousel.remove(child);
       }
       meshMap.length = 0;
-      numCols = cols;
 
       const radius = computeRadius(cols);
 
@@ -151,63 +118,23 @@ export default function Visualizer() {
           );
           const isFiller = !match;
 
-          // Block mesh material
           const mat = new THREE.MeshStandardMaterial({
-            color:             isFiller ? new THREE.Color(0x12122a) : blockBaseColor(octave),
-            emissive:          new THREE.Color(0x000000),
-            emissiveIntensity: 0,
-            metalness:         isFiller ? 0.1  : 0.2,
-            roughness:         isFiller ? 0.9  : 0.5,
-            transparent:       isFiller,
-            opacity:           isFiller ? 0.22 : 1.0,
+            color:       isFiller ? new THREE.Color(0x12122a) : blockBaseColor(octave),
+            metalness:   isFiller ? 0.1 : 0.2,
+            roughness:   isFiller ? 0.9 : 0.5,
+            transparent: isFiller,
+            opacity:     isFiller ? 0.22 : 1.0,
           });
 
           const mesh = new THREE.Mesh(blockGeo, mat);
-
-          // y: lvl=0 (oct2, red) at top, lvl=3 (oct5, green) at bottom
           const y = ((N_LEVELS - 1 - lvl) - (N_LEVELS - 1) / 2) * (BH + GAP_H);
           mesh.position.set(sx, y, sz);
-          mesh.lookAt(0, y, 0); // face the center
+          mesh.lookAt(0, y, 0);
           mesh.castShadow    = !isFiller;
           mesh.receiveShadow = true;
           carousel.add(mesh);
 
-          // ── Glow sprite (hidden until flash) ──────────────
-          let glowSprite = null;
-          let pointLight  = null;
-
-          if (!isFiller) {
-            // Sprite behind the block face
-            const spriteMat = new THREE.SpriteMaterial({
-              map:         glowTex,
-              color:       blockLightColor(octave),
-              transparent: true,
-              opacity:     0,
-              blending:    THREE.AdditiveBlending,
-              depthWrite:  false,
-            });
-            glowSprite = new THREE.Sprite(spriteMat);
-            glowSprite.scale.set(2.8, 2.8, 1);
-
-            // Place the sprite at the same world position as the mesh
-            // (carousel local coords, will move with it)
-            glowSprite.position.copy(mesh.position);
-            // Push sprite slightly toward center so it sits behind the face
-            const toCenter = new THREE.Vector3(-sx, 0, -sz).normalize();
-            glowSprite.position.addScaledVector(toCenter, 0.15);
-            carousel.add(glowSprite);
-
-            // Point light — colour the surrounding blocks
-            pointLight = new THREE.PointLight(blockLightColor(octave), 0, 4.5, 2);
-            pointLight.position.copy(mesh.position);
-            carousel.add(pointLight);
-          }
-
-          meshMap[col].push({
-            mesh, mat, glowSprite, pointLight,
-            isFiller, octave,
-            isFlash: false, flashStart: 0, unflashStart: 0,
-          });
+          meshMap[col].push({ mesh, mat, isFiller, octave });
         }
       }
     }
@@ -220,40 +147,10 @@ export default function Visualizer() {
 
     // ── Store subscription ────────────────────────────────────
     const unsub = useSequencerStore.subscribe((state, prev) => {
-      // Rebuild when blocks or column count change
       if (state.blocks !== prev.blocks || state.totalColumns !== prev.totalColumns) {
         buildCarousel(state.totalColumns, state.blocks);
       }
 
-      // ── Flash in ──────────────────────────────────────────
-      if (state.triggerSet !== prev.triggerSet) {
-        state.triggerSet.forEach(id => {
-          if (prev.triggerSet.has(id)) return;
-          const block = state.blocks.find(b => b.id === id);
-          if (!block) return;
-          const col   = block.column;
-          const level = Math.max(MIN_OCT, Math.min(MAX_OCT, block.octave)) - MIN_OCT;
-          const entry = meshMap[col]?.[level];
-          if (!entry || entry.isFiller) return;
-          entry.isFlash   = true;
-          entry.flashStart = performance.now();
-        });
-
-        // ── Flash out ────────────────────────────────────────
-        prev.triggerSet.forEach(id => {
-          if (state.triggerSet.has(id)) return;
-          const block = state.blocks.find(b => b.id === id);
-          if (!block) return;
-          const col   = block.column;
-          const level = Math.max(MIN_OCT, Math.min(MAX_OCT, block.octave)) - MIN_OCT;
-          const entry = meshMap[col]?.[level];
-          if (!entry || entry.isFiller) return;
-          entry.isFlash      = false;
-          entry.unflashStart = performance.now();
-        });
-      }
-
-      // ── Rotation target ──────────────────────────────────
       rot.playbackState = state.playbackState;
 
       if (state.playbackState === 'playing' && state.currentStep !== prev.currentStep) {
@@ -263,16 +160,14 @@ export default function Visualizer() {
         while (delta < -Math.PI) delta += Math.PI * 2;
         rot.target = rot.target + delta;
       } else if (state.playbackState === 'stopped') {
-        // Snap back to step 0 facing front
         let delta = 0 - rot.target;
         while (delta >  Math.PI) delta -= Math.PI * 2;
         while (delta < -Math.PI) delta += Math.PI * 2;
         rot.target = rot.target + delta;
       }
-      // paused → leave target unchanged
     });
 
-    // ── Floor atmosphere plane ────────────────────────────────
+    // ── Floor atmosphere ──────────────────────────────────────
     const floorGeo = new THREE.PlaneGeometry(22, 22);
     const floorMat = new THREE.MeshBasicMaterial({
       color: 0x4422aa, transparent: true, opacity: 0.06, side: THREE.DoubleSide,
@@ -292,55 +187,9 @@ export default function Visualizer() {
       const dt  = Math.min((now - lastT) / 1000, 0.1);
       lastT = now;
 
-      // Lerp carousel Y rotation
       const lerpSpeed = rot.playbackState === 'playing' ? 9 : 3.5;
       rot.current += (rot.target - rot.current) * Math.min(1, lerpSpeed * dt);
       carousel.rotation.y = rot.current;
-
-      // Update flash emissive + glow per entry
-      for (let col = 0; col < meshMap.length; col++) {
-        const col_ = meshMap[col];
-        if (!col_) continue;
-        for (let lvl = 0; lvl < col_.length; lvl++) {
-          const e = col_[lvl];
-          if (e.isFiller) continue;
-
-          const { mat, glowSprite, pointLight, octave, isFlash, flashStart, unflashStart } = e;
-
-          let intensity; // 0–1
-
-          if (isFlash) {
-            // Fast ramp-in: 35ms
-            const t = Math.min(1, (now - flashStart) / 35);
-            intensity = t;
-          } else {
-            // Exponential fade-out: ~280ms half-life
-            const elapsed = (now - unflashStart) / 1000;
-            intensity = Math.max(0, 1 - elapsed / 0.28);
-          }
-
-          // Emissive color + intensity on mesh material
-          if (intensity > 0.01) {
-            mat.emissive.copy(blockEmissiveCol(octave));
-            mat.emissiveIntensity = intensity * 1.8;  // overshoot slightly for brightness
-            mat.color.copy(blockBrightColor(octave));
-          } else {
-            mat.emissiveIntensity = 0;
-            mat.color.copy(blockBaseColor(octave));
-          }
-
-          // Glow sprite opacity
-          if (glowSprite) {
-            glowSprite.material.opacity = intensity * 0.85;
-            glowSprite.scale.setScalar(2.4 + intensity * 1.4);
-          }
-
-          // Point light intensity (radius 4.5 units affects nearby blocks)
-          if (pointLight) {
-            pointLight.intensity = intensity * 3.5;
-          }
-        }
-      }
 
       renderer.render(scene, camera);
     }
@@ -362,7 +211,6 @@ export default function Visualizer() {
       cancelAnimationFrame(rafId);
       unsub();
       ro.disconnect();
-      glowTex.dispose();
       blockGeo.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode === container) {
@@ -375,7 +223,6 @@ export default function Visualizer() {
     <div style={{ width: '100%', height: '100%', position: 'relative', background: '#07070f' }}>
       <div ref={mountRef} style={{ width: '100%', height: '100%' }} />
 
-      {/* Fullscreen button */}
       <button
         onClick={toggleFullscreen}
         title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
