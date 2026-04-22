@@ -216,17 +216,19 @@ class AudioEngine {
    * Rebuilds the entire graph in an OfflineAudioContext.
    */
   async renderToBuffer(blocks, bpm, totalColumns) {
-    const stepsPerBeat = 4; // 16th note = 1/4 beat
-    const totalBeats = totalColumns / stepsPerBeat;
-    const durationSeconds = (totalBeats / bpm) * 60 + 3; // +3s tail
+    // Pre-calculate all timings in seconds — no Tone.js string parsing at render time
+    const sixteenthSecs = 60 / bpm / 4;
+    const durationSeconds = totalColumns * sixteenthSecs + 4; // +4s tail for reverb/delay
+
+    // Capture live master volume so the WAV matches what you hear
+    const masterDb = this.masterGain?.volume?.value ?? -6;
 
     const buffer = await Tone.Offline(async ({ transport }) => {
       transport.bpm.value = bpm;
 
-      const dest = Tone.getDestination();
+      // Master volume — mirrors the live audio chain
+      const masterVol = new Tone.Volume(masterDb).toDestination();
 
-      // Build all voices offline
-      const offlineVoices = new Map();
       for (const block of blocks) {
         const synth = new Tone.MonoSynth({
           oscillator: { type: block.oscillator.type },
@@ -238,31 +240,29 @@ class AudioEngine {
           },
         });
         const gain = new Tone.Gain(block.amplifier.gain);
-        const reverb = new Tone.Reverb({ decay: block.fx.reverb.roomSize * 5 + 0.5, wet: block.fx.reverb.enabled ? block.fx.reverb.wet : 0 });
+        const reverb = new Tone.Reverb({
+          decay: block.fx.reverb.roomSize * 5 + 0.5,
+          wet: block.fx.reverb.enabled ? block.fx.reverb.wet : 0,
+        });
         const delay = new Tone.FeedbackDelay({
           delayTime: block.fx.delay.time,
           feedback: block.fx.delay.feedback,
           wet: block.fx.delay.enabled ? block.fx.delay.wet : 0,
         });
+
         await reverb.ready;
+
         synth.connect(gain);
         gain.connect(reverb);
         reverb.connect(delay);
-        delay.connect(dest);
-        offlineVoices.set(block.id, { synth, gain, reverb, delay });
-      }
+        delay.connect(masterVol);
 
-      // Schedule each block
-      for (const block of blocks) {
-        const voice = offlineVoices.get(block.id);
-        if (!voice) continue;
-        // Each column is one 16th note
-        const timeStr = `${block.column}*0:0:1`;
-        const durationStr = `${block.duration}*0:0:1`;
+        // Schedule note using pre-calculated seconds — reliable across all BPMs
+        const startSec = block.column * sixteenthSecs;
+        const durSec   = block.duration * sixteenthSecs;
         transport.schedule((time) => {
-          const dur = Tone.Time(durationStr).toSeconds();
-          voice.synth.triggerAttackRelease(block.note, dur, time);
-        }, timeStr);
+          synth.triggerAttackRelease(block.note, durSec, time);
+        }, startSec);
       }
 
       transport.start(0);
