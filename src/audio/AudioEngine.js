@@ -227,13 +227,10 @@ class AudioEngine {
     const durationSeconds = totalColumns * sixteenthSecs + tail;
     const masterDb = this.masterGain?.volume?.value ?? -6;
 
-    const buffer = await Tone.Offline(async ({ transport }) => {
-      transport.bpm.value = bpm;
+    const buffer = await Tone.Offline(async () => {
       const masterVol = new Tone.Volume(masterDb).toDestination();
 
       // ── Phase 1: build every voice, await all reverbs ─────────
-      // All awaits complete before any note is scheduled, so no
-      // note misses its transport time slot.
       const scheduled = [];
       for (const block of blocks) {
         const synth = new Tone.MonoSynth({
@@ -256,7 +253,7 @@ class AudioEngine {
           wet:       block.fx.delay.enabled ? block.fx.delay.wet : 0,
         });
 
-        await reverb.ready;   // must resolve before we schedule
+        await reverb.ready;
 
         synth.connect(gain);
         gain.connect(reverb);
@@ -271,14 +268,12 @@ class AudioEngine {
         });
       }
 
-      // ── Phase 2: schedule all notes (transport not started yet) ─
+      // ── Phase 2: trigger notes at absolute audio context times ──
+      // Bypasses transport.schedule entirely — avoids the edge case
+      // where events near the end of the timeline are silently dropped.
       for (const { synth, note, startSec, durSec } of scheduled) {
-        transport.schedule((time) => {
-          synth.triggerAttackRelease(note, durSec, time);
-        }, startSec);
+        synth.triggerAttackRelease(note, durSec, startSec);
       }
-
-      transport.start(0);
     }, durationSeconds);
 
     return buffer;
